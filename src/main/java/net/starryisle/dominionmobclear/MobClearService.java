@@ -15,13 +15,17 @@ import org.bukkit.entity.Enemy;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.EntityType;
 import org.bukkit.entity.LivingEntity;
+import org.bukkit.entity.Player;
 import org.bukkit.entity.Tameable;
 import org.bukkit.scheduler.BukkitTask;
 
+import java.util.Arrays;
 import java.util.EnumSet;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
@@ -47,10 +51,14 @@ public final class MobClearService {
     private boolean ignoreWorldwide;
     private int maxIndexedChunks;
     private int indexRefreshSeconds;
+    private int playerRadiusChunks;
     private long lastIndexBuildMillis;
     private final Set<ChunkKey> claimChunks = new HashSet<>();
+    /** 每轮扫描前收集的玩家所在区块，按世界分组存成 [x0,z0,x1,z1,...]；空 = 没有玩家。 */
+    private final Map<UUID, int[]> playerChunks = new HashMap<>();
     private volatile boolean indexDirty = true;
     private boolean useClaimIndex = true;
+    private boolean fallbackWarned;
 
     /** A chunk covered by at least one player claim. */
     private record ChunkKey(UUID world, int x, int z) {
@@ -120,8 +128,10 @@ public final class MobClearService {
         ignoreTamed = plugin.getConfig().getBoolean("ignore.tamed", true);
         ignoreBosses = plugin.getConfig().getBoolean("ignore.bosses", true);
         ignoreWorldwide = plugin.getConfig().getBoolean("ignore-worldwide", true);
-        maxIndexedChunks = Math.max(100, plugin.getConfig().getInt("max-indexed-chunks", 20000));
+        maxIndexedChunks = Math.max(100, plugin.getConfig().getInt("max-indexed-chunks", 50000));
         indexRefreshSeconds = Math.max(0, plugin.getConfig().getInt("index-refresh-seconds", 60));
+        playerRadiusChunks = Math.max(0, Math.min(32,
+                plugin.getConfig().getInt("player-radius-chunks", 8)));
         ignoredTypes.clear();
         for (String raw : plugin.getConfig().getStringList("ignore.types")) {
             try {
@@ -171,10 +181,23 @@ public final class MobClearService {
 
     /** Runs one scan synchronously on the server thread. */
     public ScanResult sweep() {
+        return sweep(false);
+    }
+
+    /**
+     * Runs one scan.
+     *
+     * @param fullScan true 时忽略 player-radius 限制，扫描所有领地区块（手动清理用）
+     */
+    public ScanResult sweep(boolean fullScan) {
         long start = System.nanoTime();
         if (indexDirty || (indexRefreshSeconds > 0
                 && System.currentTimeMillis() - lastIndexBuildMillis >= indexRefreshSeconds * 1000L)) {
             rebuildIndex();
+        }
+        boolean useRadius = playerRadiusChunks > 0 && !fullScan;
+        if (useRadius) {
+            collectPlayerChunks();
         }
         int[] chunks = {0};
         int[] checked = {0};
@@ -189,6 +212,9 @@ public final class MobClearService {
                         || !world.isChunkLoaded(key.x(), key.z())) {
                     continue;
                 }
+                if (useRadius && !nearPlayer(key.world(), key.x(), key.z())) {
+                    continue;
+                }
                 chunks[0]++;
                 if (scanChunk(world.getChunkAt(key.x(), key.z()), checked, removed)) {
                     limited = true;
@@ -201,7 +227,11 @@ public final class MobClearService {
                 if (blacklistedWorlds.contains(world.getName().toLowerCase(Locale.ROOT))) {
                     continue;
                 }
+                UUID worldId = world.getUID();
                 for (Chunk chunk : world.getLoadedChunks()) {
+                    if (useRadius && !nearPlayer(worldId, chunk.getX(), chunk.getZ())) {
+                        continue;
+                    }
                     chunks[0]++;
                     if (scanChunk(chunk, checked, removed)) {
                         limited = true;
@@ -263,11 +293,46 @@ public final class MobClearService {
         indexDirty = true;
     }
 
+    /** 收集在线玩家所在区块，供 {@link #nearPlayer} 做距离判断。没有玩家时集合为空。 */
+    private void collectPlayerChunks() {
+        playerChunks.clear();
+        for (Player player : Bukkit.getOnlinePlayers()) {
+            UUID worldId = player.getWorld().getUID();
+            int chunkX = player.getLocation().getBlockX() >> 4;
+            int chunkZ = player.getLocation().getBlockZ() >> 4;
+            int[] previous = playerChunks.get(worldId);
+            int[] next = previous == null ? new int[2] : Arrays.copyOf(previous, previous.length + 2);
+            next[next.length - 2] = chunkX;
+            next[next.length - 1] = chunkZ;
+            playerChunks.put(worldId, next);
+        }
+    }
+
+    /** 该区块是否在任一在线玩家的 player-radius-chunks 半径内。 */
+    private boolean nearPlayer(UUID worldId, int chunkX, int chunkZ) {
+        int[] coords = playerChunks.get(worldId);
+        if (coords == null) {
+            return false;
+        }
+        for (int i = 0; i < coords.length; i += 2) {
+            if (Math.abs(coords[i] - chunkX) <= playerRadiusChunks
+                    && Math.abs(coords[i + 1] - chunkZ) <= playerRadiusChunks) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private void rebuildIndex() {
         List<DominionDTO> dominions = api.getAllDominions();
         long estimated = 0;
         for (DominionDTO dom : dominions) {
             if (dom.getId() <= 0) {
+                continue;
+            }
+            // 只把「开启了清理」的领地放进索引：flag 默认关闭，
+            // 把这些区块排除掉能大幅缩小索引，也避免触发 max-indexed-chunks 回退。
+            if (useFlag && flag != null && !Boolean.TRUE.equals(dom.getEnvFlagValue(flag))) {
                 continue;
             }
             UUID worldId = dom.getWorldUid();
@@ -288,14 +353,23 @@ public final class MobClearService {
                 claimChunks.clear();
                 useClaimIndex = false;
                 indexDirty = false;
-                plugin.getLogger().warning("Claim chunk index exceeds max-indexed-chunks="
-                        + maxIndexedChunks + "; falling back to loaded-chunk scan.");
+                lastIndexBuildMillis = System.currentTimeMillis();
+                if (!fallbackWarned) {
+                    fallbackWarned = true;
+                    plugin.getLogger().warning("Claim chunk index exceeds max-indexed-chunks="
+                            + maxIndexedChunks + "; falling back to loaded-chunk scan.");
+                }
                 return;
             }
         }
         Set<ChunkKey> next = new HashSet<>();
         for (DominionDTO dom : dominions) {
             if (dom.getId() <= 0) {
+                continue;
+            }
+            // 只把「开启了清理」的领地放进索引：flag 默认关闭，
+            // 把这些区块排除掉能大幅缩小索引，也避免触发 max-indexed-chunks 回退。
+            if (useFlag && flag != null && !Boolean.TRUE.equals(dom.getEnvFlagValue(flag))) {
                 continue;
             }
             UUID worldId = dom.getWorldUid();
@@ -321,6 +395,7 @@ public final class MobClearService {
         claimChunks.addAll(next);
         useClaimIndex = true;
         indexDirty = false;
+        fallbackWarned = false;
         lastIndexBuildMillis = System.currentTimeMillis();
     }
 

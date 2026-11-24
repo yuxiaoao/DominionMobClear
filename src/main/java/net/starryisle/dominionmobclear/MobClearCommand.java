@@ -12,7 +12,7 @@ import org.bukkit.entity.Player;
 import java.util.List;
 import java.util.Locale;
 
-/** /dmc toggle|status|list|clear|reload */
+/** /dmc toggle|status|here|list|clear|reload */
 public final class MobClearCommand implements CommandExecutor, TabCompleter {
 
     private final DominionMobClearPlugin plugin;
@@ -30,8 +30,15 @@ public final class MobClearCommand implements CommandExecutor, TabCompleter {
         if (sub.equals("status")) {
             return status(sender, args);
         }
+        if (sub.equals("here") || sub.equals("info")) {
+            return here(sender);
+        }
         if (sub.equals("list")) {
             return list(sender);
+        }
+        if (sub.equals("help")) {
+            help(sender);
+            return true;
         }
         if (!sender.hasPermission("dominionmobclear.admin")) {
             sender.sendMessage("§c你没有权限使用这个命令。");
@@ -44,19 +51,20 @@ public final class MobClearCommand implements CommandExecutor, TabCompleter {
                 sender.sendMessage("§a配置已重载。");
             }
             case "clear" -> {
-                MobClearService.ScanResult result = service.sweep();
+                // 手动清理不受 player-radius-chunks 限制，扫全部领地区块
+                MobClearService.ScanResult result = service.sweep(true);
                 sender.sendMessage("§a扫描完成: §f" + result.chunks() + " §a区块，检查 §f"
                         + result.checked() + " §a只敌对生物，清理 §f" + result.removed()
                         + " §a只，耗时 §f" + result.millis() + "ms");
             }
-            case "help" -> help(sender);
-            default -> sender.sendMessage("§c用法: /dmc <toggle|status|list|clear|reload>");
+            default -> sender.sendMessage("§c用法: /dmc <here|toggle|status|list|clear|reload>");
         }
         return true;
     }
 
     private void help(CommandSender sender) {
         sender.sendMessage("§6DominionMobClear");
+        sender.sendMessage("§7/dmc here §f查看你当前站立的领地及清理开关");
         sender.sendMessage("§7/dmc status [领地] §f查看自己领地是否开启清理");
         sender.sendMessage("§7/dmc toggle [领地] §f切换自己/当前领地的清理");
         sender.sendMessage("§7/dmc list §f列出自己的领地及开关状态");
@@ -64,11 +72,42 @@ public final class MobClearCommand implements CommandExecutor, TabCompleter {
         sender.sendMessage("§7/dmc reload §f重载配置（管理员）");
     }
 
-    private boolean status(CommandSender sender, String[] args) {
-        if (!sender.hasPermission("dominionmobclear.use")) {
-            sender.sendMessage("§c你没有权限使用这个命令。");
+    /** Shows the claim the sender is standing in, including claims owned by others. */
+    private boolean here(CommandSender sender) {
+        if (!(sender instanceof Player player)) {
+            sender.sendMessage("§c这个命令只能玩家使用。");
             return true;
         }
+        MobClearService service = plugin.service();
+        DominionDTO dom = service.api().getDominion(player.getLocation());
+        if (dom == null) {
+            sender.sendMessage("§7你当前不在任何领地内。");
+            return true;
+        }
+        if (dom.getId() < 0) {
+            sender.sendMessage("§7你当前在 Dominion 的世界级领地内（id " + dom.getId()
+                    + "），这不是玩家领地，本插件不会清理它。");
+            return true;
+        }
+        boolean owner = dom.getOwner().equals(player.getUniqueId());
+        boolean on = service.isFlagOn(dom);
+        sender.sendMessage("§6当前领地: §f" + dom.getName() + " §8#" + dom.getId()
+                + (owner ? " §a(你的领地)" : ""));
+        sender.sendMessage("§7主人: §f" + service.api().getPlayerName(dom.getOwner()));
+        if (!service.useFlag()) {
+            sender.sendMessage("§7敌对生物清理: §e全服生效（未启用 flag 控制）");
+            return true;
+        }
+        sender.sendMessage("§7敌对生物清理: " + (on ? "§a已开启" : "§c未开启"));
+        if (!on) {
+            sender.sendMessage(owner
+                    ? "§7用 §f/dmc toggle §7可以开启这块领地的清理。"
+                    : "§7需要领地主人或管理员用 §f/dmc toggle §7开启。");
+        }
+        return true;
+    }
+
+    private boolean status(CommandSender sender, String[] args) {
         if (!(sender instanceof Player player)) {
             sender.sendMessage("§c这个命令只能玩家使用。");
             return true;
@@ -87,10 +126,6 @@ public final class MobClearCommand implements CommandExecutor, TabCompleter {
     }
 
     private boolean toggle(CommandSender sender, String[] args) {
-        if (!sender.hasPermission("dominionmobclear.use")) {
-            sender.sendMessage("§c你没有权限使用这个命令。");
-            return true;
-        }
         MobClearService service = plugin.service();
         if (!service.useFlag() || service.flag() == null) {
             sender.sendMessage("§c领地 flag 不可用，请检查 Dominion 是否正常加载。");
@@ -152,10 +187,6 @@ public final class MobClearCommand implements CommandExecutor, TabCompleter {
     }
 
     private boolean list(CommandSender sender) {
-        if (!sender.hasPermission("dominionmobclear.use")) {
-            sender.sendMessage("§c你没有权限使用这个命令。");
-            return true;
-        }
         if (!(sender instanceof Player player)) {
             sender.sendMessage("§c这个命令只能玩家使用。");
             return true;
@@ -236,7 +267,7 @@ public final class MobClearCommand implements CommandExecutor, TabCompleter {
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         List<String> out = new java.util.ArrayList<>();
         if (args.length == 1) {
-            for (String option : new String[]{"toggle", "status", "list", "clear", "reload", "help"}) {
+            for (String option : new String[]{"here", "toggle", "status", "list", "clear", "reload", "help"}) {
                 if (option.startsWith(args[0].toLowerCase(Locale.ROOT))) {
                     out.add(option);
                 }
