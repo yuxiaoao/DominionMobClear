@@ -1,0 +1,46 @@
+# DominionMobClear - 定时清理领地内的敌对生物
+
+# 是否开启定时扫描
+enabled: true
+
+# 扫描间隔（tick）。40 tick = 2 秒。卡的话可以调到 100（5 秒）或 200（10 秒）
+interval-ticks: 40
+
+# 每轮最多检查多少个敌对生物，防止单次扫描太久
+max-checks-per-sweep: 3000
+
+# 只扫描“有领地覆盖”的区块；索引超过这个数量时回退为扫描全部已加载区块
+max-indexed-chunks: 3000
+
+# 每隔多少秒强制重建一次领地区块索引（0 = 关闭，只在领地增删改时重建）
+# 领地创建是异步的，定时重建可以兜底，避免极短时间内漏扫新建领地
+index-refresh-seconds: 60
+
+# 清理方式：
+#   remove = 直接删除，不掉落、不给经验（推荐，避免被刷怪塔利用）
+#   kill   = setHealth(0)，有掉落物，会触发死亡/击杀事件
+clear-mode: remove
+
+# 使用 Dominion 的领地 flag "hostile_mob_clear_claim" 控制每块领地是否清理
+# flag 默认关闭；领地主人站在领地里执行 /dmc toggle 即可切换
+# 也可以在 Dominion 的 flag 设置里单独开启某块领地
+use-dominion-flag: true
+
+# 忽略 Dominion 的世界级领地（id = -1）。
+# 这个不是玩家领地，开启后不会因为它而清理全世界的怪。
+ignore-worldwide: true
+
+# 不清理的实体
+ignore:
+  # 有命名牌的怪
+  named: true
+  # 被驯服的生物
+  tamed: true
+  # Boss（末影龙、凋灵）
+  bosses: true
+  # 额外排除的实体类型，例如 GIANT、WARDEN
+  types: []
+
+# 不扫描的世界
+worlds:
+  blacklist: []

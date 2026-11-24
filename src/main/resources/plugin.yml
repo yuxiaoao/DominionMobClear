@@ -1,0 +1,18 @@
+name: DominionMobClear
+version: '1.4.1'
+main: net.starryisle.dominionmobclear.DominionMobClearPlugin
+api-version: '1.20'
+description: Clears hostile mobs that are inside a Dominion claim
+author: StarryIsle
+depend: [Dominion]
+commands:
+  dmc:
+    description: DominionMobClear admin command
+    usage: /dmc <toggle|status|clear|reload>
+permissions:
+  dominionmobclear.use:
+    description: Toggle clearing for your own claims with /dmc toggle
+    default: true
+  dominionmobclear.admin:
+    description: Use /dmc and manage DominionMobClear
+    default: op
