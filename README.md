@@ -2,12 +2,6 @@
 
 Dominion 附属插件：定时检查领地内是否有敌对生物，有就清理。
 
-和 Dominion 自带的 `MONSTER_SPAWN` / `MONSTER_MOVE` 不冲突：
-
-- `MONSTER_SPAWN` 管怪物生成
-- `MONSTER_MOVE` 只是阻止怪物寻路进领地
-- 本插件负责**已经在领地里的敌对生物**
-
 ## 功能
 
 - 每隔 N tick 扫描已加载区块，发现领地内的 `Enemy` 就删除
